@@ -43,28 +43,17 @@ if [ "$1" = "start" ] && [[ $ID =~ $NUMBER  ]] && [ $ID -gt 0 ] && [ $ID -lt 253
  echo "8086 Consultancy" > strings/0x409/manufacturer
  echo $PRODUCT > strings/0x409/product		# Boot method
 
- mkdir -p functions/acm.usb0    # serial (console)
-# mkdir -p functions/acm.usb1	# serial (admin)
- mkdir -p functions/rndis.usb0  # network
-
- echo "00:22:82:ff:fe:$ID_HEX" > functions/rndis.usb0/host_addr
- echo "00:22:82:ff:ff:$ID_HEX" > functions/rndis.usb0/dev_addr
-
  mkdir -p configs/c.1
  echo "250" > configs/c.1/MaxPower
- ln -s functions/rndis.usb0 configs/c.1/
- ln -s functions/acm.usb0   configs/c.1/
-# ln -s functions/acm.usb1   configs/c.1/
 
- # OS descriptors
- echo "1"	> os_desc/use
- echo "0xcd"	> os_desc/b_vendor_code
- echo "MSFT100"	> os_desc/qw_sign
+ mkdir -p functions/acm.usb0    # serial (console)
+ ln -s functions/acm.usb0 configs/c.1/
 
- echo "RNDIS"	> functions/rndis.usb0/os_desc/interface.rndis/compatible_id
- echo "5162001"	> functions/rndis.usb0/os_desc/interface.rndis/sub_compatible_id
-
- ln -s configs/c.1 os_desc
+ # Radxa Zero kernels support ECM but not RNDIS—stick to ECM while keeping MAC/ID layout
+ mkdir -p functions/ecm.usb0
+ echo "00:22:82:ff:fe:$ID_HEX" > functions/ecm.usb0/host_addr
+ echo "00:22:82:ff:ff:$ID_HEX" > functions/ecm.usb0/dev_addr
+ ln -s functions/ecm.usb0 configs/c.1/
 
  udevadm settle -t 5 || :
  ls /sys/class/udc/ > UDC
@@ -73,4 +62,3 @@ elif [ "$1" = "stop" ];then
  echo '' > $DEVDIR/UDC
  # TODO - tidyup
 fi
-

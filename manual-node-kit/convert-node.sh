@@ -17,6 +17,13 @@ require_root() {
   fi
 }
 
+disable_service_if_present() {
+  local svc=$1
+  if systemctl list-unit-files "$svc" >/dev/null 2>&1; then
+    systemctl disable --now "$svc" >/dev/null 2>&1 || true
+  fi
+}
+
 validate_node_number() {
   local value=$1
   if [[ ! $value =~ ^[0-9]+$ ]] || (( value < 1 || value > 252 )); then
@@ -46,7 +53,7 @@ configure_dhcpcd() {
   local file=/etc/dhcpcd.conf
   if [[ ! -f $file ]]; then
     log "Skipping dhcpcd.conf (not present)"
-    return
+    return 1
   fi
   if ! grep -q 'clusterctrl_fallback_usb0' "$file"; then
     cat <<'BLOCK' >> "$file"
@@ -63,12 +70,13 @@ fallback clusterctrl_fallback_usb0
 BLOCK
   fi
   sed -i "s#^static ip_address=172\\.19\\.181\\..*/24 #ClusterCTRL#static ip_address=172.19.181.${ip_last_octet}/24 #ClusterCTRL#" "$file"
+  return 0
 }
 
 configure_dhclient() {
   local ip_last_octet=$1
   local file=/etc/dhcp/dhclient.conf
-  [[ -f $file ]] || return
+  [[ -f $file ]] || return 1
   if ! grep -q 'ClusterCTRL Px' "$file"; then
     cat <<'BLOCK' >> "$file"
 
@@ -86,26 +94,54 @@ lease { # Px
 # END ClusterCTRL Px config
 BLOCK
   fi
-  sed -i "s#^  fixed-address 172\\.19\\.181\\..* # ClusterCTRL Px#  fixed-address 172.19.181.${ip_last_octet}; # ClusterCTRL Px#" "$file"
+  sed -i "s#^  fixed-address 172\\\\.19\\\\.181\\\\..* # ClusterCTRL Px#  fixed-address 172.19.181.${ip_last_octet}; # ClusterCTRL Px#" "$file"
+  return 0
 }
 
-update_config_txt() {
-  local config_file=$1
-  if grep -q '^dtoverlay=dwc2' "$config_file"; then
-    sed -i 's/^dtoverlay=dwc2.*$/dtoverlay=dwc2,dr_mode=peripheral/' "$config_file"
-  else
-    echo 'dtoverlay=dwc2,dr_mode=peripheral' >> "$config_file"
+configure_networkmanager() {
+  local ip_last_octet=$1
+  local nm_dir=/etc/NetworkManager/system-connections
+  if [[ ! -d $nm_dir ]] || ! command -v nmcli >/dev/null 2>&1; then
+    return 1
   fi
-  if grep -q '^otg_mode=1' "$config_file"; then
-    sed -i 's/^otg_mode=1.*$/#&/' "$config_file"
-  fi
+  cat <<EOF > "$nm_dir/clusterctrl-usb0.nmconnection"
+[connection]
+id=clusterctrl-usb0
+interface-name=usb0
+type=ethernet
+
+[ipv4]
+method=manual
+address1=172.19.181.${ip_last_octet}/24
+never-default=true
+ignore-auto-dns=true
+route1=172.19.181.0/24
+
+[ipv6]
+method=ignore
+EOF
+  chmod 600 "$nm_dir/clusterctrl-usb0.nmconnection"
+  nmcli connection reload || true
+  nmcli connection up clusterctrl-usb0 || true
+  return 0
 }
 
-clean_cmdline() {
-  local cmdline_file=$1
-  sed -i 's# console=ttyGS0##g' "$cmdline_file"
-  sed -i 's# init=/usr/sbin/reconfig-clusterctrl [^ ]*##g' "$cmdline_file"
-  sed -i 's# init=/sbin/reconfig-clusterctrl [^ ]*##g' "$cmdline_file"
+configure_networkd() {
+  local ip_last_octet=$1
+  local network_dir=/etc/systemd/network
+  [[ -d $network_dir ]] || return 1
+  cat <<EOF > "$network_dir/99-clusterctrl-usb0.network"
+[Match]
+Name=usb0
+
+[Network]
+Address=172.19.181.${ip_last_octet}/24
+DNS=8.8.8.8
+IPv6AcceptRA=no
+LinkLocalAddressing=no
+EOF
+  systemctl restart systemd-networkd || true
+  return 0
 }
 
 install_services() {
@@ -129,10 +165,6 @@ main() {
     exit 1
   fi
   local hostname="p${node_number}"
-  local boot_dir=/boot/firmware
-  [[ -d $boot_dir ]] || boot_dir=/boot
-  local config_txt="$boot_dir/config.txt"
-  local cmdline_txt="$boot_dir/cmdline.txt"
 
   log "Configuring /etc/default/clusterctrl"
   ensure_file_from_assets "$assets_dir/default-clusterctrl" /etc/default/clusterctrl 644
@@ -147,24 +179,21 @@ main() {
   ensure_file_from_assets "$assets_dir/issue.p" /etc/issue 644
 
   log "Configuring USB gadget network fallback"
-  configure_dhcpcd "$node_number"
-  configure_dhclient "$node_number"
-
-  if [[ -f $config_txt ]]; then
-    log "Updating $config_txt"
-    update_config_txt "$config_txt"
-  else
-    log "Warning: $config_txt not found"
+  local net_configured=0
+  configure_dhcpcd "$node_number" && net_configured=1 || true
+  configure_dhclient "$node_number" && net_configured=1 || true
+  if [[ $net_configured -eq 0 ]]; then
+    configure_networkmanager "$node_number" && net_configured=1 || true
   fi
-
-  if [[ -f $cmdline_txt ]]; then
-    log "Cleaning kernel cmdline"
-    clean_cmdline "$cmdline_txt"
-  else
-    log "Warning: $cmdline_txt not found"
+  if [[ $net_configured -eq 0 ]]; then
+    configure_networkd "$node_number" && net_configured=1 || true
+  fi
+  if [[ $net_configured -eq 0 ]]; then
+    log "WARNING: usb0 static IP not configured automatically; please configure manually."
   fi
 
   log "Installing composite gadget service"
+  disable_service_if_present amlogic-adbd.service
   install_services "$assets_dir"
 
   log "Enabling USB serial console"
