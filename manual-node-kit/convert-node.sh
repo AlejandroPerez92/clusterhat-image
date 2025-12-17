@@ -48,89 +48,11 @@ update_hosts() {
   fi
 }
 
-configure_dhcpcd() {
-  local ip_last_octet=$1
-  local file=/etc/dhcpcd.conf
-  if [[ ! -f $file ]]; then
-    log "Skipping dhcpcd.conf (not present)"
-    return 1
-  fi
-  if ! grep -q 'clusterctrl_fallback_usb0' "$file"; then
-    cat <<'BLOCK' >> "$file"
-
-# --- ClusterCTRL Px config (managed by convert-node.sh) ---
-profile clusterctrl_fallback_usb0
-static ip_address=172.19.181.253/24 #ClusterCTRL
-static routers=172.19.181.254
-static domain_name_servers=8.8.8.8 208.67.222.222
-
-interface usb0
-fallback clusterctrl_fallback_usb0
-# --- End ClusterCTRL Px config ---
-BLOCK
-  fi
-  sed -i "s#^static ip_address=172\\.19\\.181\\..*/24 #ClusterCTRL#static ip_address=172.19.181.${ip_last_octet}/24 #ClusterCTRL#" "$file"
-  return 0
-}
-
-configure_dhclient() {
-  local ip_last_octet=$1
-  local file=/etc/dhcp/dhclient.conf
-  [[ -f $file ]] || return 1
-  if ! grep -q 'ClusterCTRL Px' "$file"; then
-    cat <<'BLOCK' >> "$file"
-
-# START ClusterCTRL Px config (managed by convert-node.sh)
-lease { # Px
-  interface "usb0";
-  fixed-address 172.19.181.253; # ClusterCTRL Px
-  option subnet-mask 255.255.255.0;
-  option routers 172.19.181.254;
-  option domain-name-servers 8.8.8.8;
-  renew never;
-  rebind never;
-  expire never;
-}
-# END ClusterCTRL Px config
-BLOCK
-  fi
-  sed -i "s#^  fixed-address 172\\\\.19\\\\.181\\\\..* # ClusterCTRL Px#  fixed-address 172.19.181.${ip_last_octet}; # ClusterCTRL Px#" "$file"
-  return 0
-}
-
-configure_networkmanager() {
-  local ip_last_octet=$1
-  local nm_dir=/etc/NetworkManager/system-connections
-  if [[ ! -d $nm_dir ]] || ! command -v nmcli >/dev/null 2>&1; then
-    return 1
-  fi
-  cat <<EOF > "$nm_dir/clusterctrl-usb0.nmconnection"
-[connection]
-id=clusterctrl-usb0
-interface-name=usb0
-type=ethernet
-
-[ipv4]
-method=manual
-address1=172.19.181.${ip_last_octet}/24
-never-default=true
-ignore-auto-dns=true
-route1=172.19.181.0/24
-
-[ipv6]
-method=ignore
-EOF
-  chmod 600 "$nm_dir/clusterctrl-usb0.nmconnection"
-  nmcli connection reload || true
-  nmcli connection up clusterctrl-usb0 || true
-  return 0
-}
-
 configure_networkd() {
   local ip_last_octet=$1
   local network_dir=/etc/systemd/network
-  [[ -d $network_dir ]] || return 1
-  cat <<EOF > "$network_dir/99-clusterctrl-usb0.network"
+  mkdir -p "$network_dir"
+cat <<EOF > "$network_dir/99-clusterctrl-usb0.network"
 [Match]
 Name=usb0
 
@@ -139,9 +61,12 @@ Address=172.19.181.${ip_last_octet}/24
 DNS=8.8.8.8
 IPv6AcceptRA=no
 LinkLocalAddressing=no
+
+[Link]
+ConfigureWithoutCarrier=yes
 EOF
-  systemctl restart systemd-networkd || true
-  return 0
+systemctl enable systemd-networkd.service >/dev/null 2>&1 || true
+return 0
 }
 
 install_services() {
@@ -149,7 +74,7 @@ install_services() {
   ensure_file_from_assets "$assets_dir/composite-clusterctrl" /usr/sbin/composite-clusterctrl 755
   ensure_file_from_assets "$assets_dir/clusterctrl-composite.service" /etc/systemd/system/clusterctrl-composite.service 644
   systemctl daemon-reload
-  systemctl enable --now clusterctrl-composite.service
+  systemctl enable clusterctrl-composite.service
 }
 
 main() {
@@ -178,17 +103,8 @@ main() {
   log "Updating /etc/issue"
   ensure_file_from_assets "$assets_dir/issue.p" /etc/issue 644
 
-  log "Configuring USB gadget network fallback"
-  local net_configured=0
-  configure_dhcpcd "$node_number" && net_configured=1 || true
-  configure_dhclient "$node_number" && net_configured=1 || true
-  if [[ $net_configured -eq 0 ]]; then
-    configure_networkmanager "$node_number" && net_configured=1 || true
-  fi
-  if [[ $net_configured -eq 0 ]]; then
-    configure_networkd "$node_number" && net_configured=1 || true
-  fi
-  if [[ $net_configured -eq 0 ]]; then
+  log "Configuring USB gadget network via systemd-networkd"
+  if ! configure_networkd "$node_number"; then
     log "WARNING: usb0 static IP not configured automatically; please configure manually."
   fi
 
@@ -197,8 +113,7 @@ main() {
   install_services "$assets_dir"
 
   log "Enabling USB serial console"
-  systemctl enable --now serial-getty@ttyGS0.service
-  systemctl disable --now clusterctrl-init.service >/dev/null 2>&1 || true
+  systemctl enable serial-getty@ttyGS0.service
 
   log "Disabling ClusterCTRL kernel forwarding toggle"
   if [[ -f /etc/sysctl.conf ]]; then

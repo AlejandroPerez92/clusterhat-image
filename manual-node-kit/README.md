@@ -23,7 +23,7 @@ This directory bundles the files and script required to convert a fresh Raspberr
    The script validates the number (1–252) and performs these actions:
 
    - Seeds `/etc/default/clusterctrl`, sets `TYPE=node` / `ID=X`, and copies the serial-console banner.
-   - Updates hostname, `/etc/hosts`, `/etc/issue`, and wires up the usb0 static IP using whichever stack is available (`dhcpcd`, `dhclient`, NetworkManager, or systemd-networkd).
+   - Updates hostname, `/etc/hosts`, `/etc/issue`, and wires up the usb0 static IP via systemd-networkd.
    - Forces the USB controller into gadget/peripheral mode, removes stale `console=ttyGS0`/`reconfig-clusterctrl` boot arguments, and disables controller-only sysctl toggles.
    - Installs the gadget helper (`/usr/sbin/composite-clusterctrl`) and `clusterctrl-composite.service`, enables the USB serial getty, and disables `clusterctrl-init`. The helper always exposes a single ECM USB Ethernet interface while preserving the standard ClusterCTRL VID/PID and MAC layout, so the controller still renames the link to `ethpiX`.
 
