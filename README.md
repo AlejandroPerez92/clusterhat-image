@@ -1,35 +1,32 @@
-# Cluster HAT
+# Manual Node Conversion Kit
 
-Scripts and files used to build Cluster HAT images from Raspbian.
+This directory bundles the files and script required to convert a fresh Raspberry Pi OS (Debian Bullseye) or Radxa Zero Debian install into a ClusterCTRL Px node (p1–p252) without needing the full Factory image.
 
-## Building Cluster HAT Images
+## Contents
 
-The build script is located in the build directory.
+- `convert-node.sh` – automation of every step in `docs/manual-node-conversion.md` that applies to Bullseye nodes.
+- `files/default-clusterctrl` – baseline `/etc/default/clusterctrl` template.
+- `files/issue.p` – login banner showing the gadget IPs on `ttyGS0`.
+- `files/composite-clusterctrl` – gadget setup helper installed to `/usr/sbin`.
+- `files/clusterctrl-composite.service` – systemd unit for the composite gadget.
 
-The following is normally ran as root on a fresh Raspbian images.
+## Usage
 
-```
-git clone https://github.com/burtyb/clusterhat-image
-cd clusterhat-image/build/
-# Create a config-local.sh file and copy any lines you need to override from config.sh
-./create 2017-09-07
-```
+1. Copy this entire folder to the target device (Pi Zero or Radxa Zero) that will become node `pX` (for example with `scp`).
+2. If you are on a Radxa Zero, make sure nothing else is using the OTG port. The script automatically disables `amlogic-adbd.service`, but you should unplug/replug the OTG cable after the first run if that service was active.
+3. Run the script as root and pass the node number you want:
 
-The "2017-09-07" date above should be the date from the Raspbian/Raspberry Pi OS image you wish to convert.
+   ```bash
+   sudo ./convert-node.sh 7
+   ```
 
-When building arm64 images you need to be on an arm64 machine.
+   The script validates the number (1–252) and performs these actions:
 
-## Building on x86_64
+   - Seeds `/etc/default/clusterctrl`, sets `TYPE=node` / `ID=X`, and copies the serial-console banner.
+   - Updates hostname, `/etc/hosts`, `/etc/issue`, and wires up the usb0 static IP via systemd-networkd.
+   - Forces the USB controller into gadget/peripheral mode, removes stale `console=ttyGS0`/`reconfig-clusterctrl` boot arguments, and disables controller-only sysctl toggles.
+   - Installs the gadget helper (`/usr/sbin/composite-clusterctrl`) and `clusterctrl-composite.service`, enables the USB serial getty, and disables `clusterctrl-init`. The helper always exposes a single ECM USB Ethernet interface while preserving the standard ClusterCTRL VID/PID and MAC layout, so the controller still renames the link to `ethpiX`.
 
-Images can be built from other architectures using qemu (tested on x86_64 but may work on others)
+4. Reboot the device. After the reboot the gadget enumerates as `ClusterCTRL` and exposes the USB serial console plus an ECM USB Ethernet link with the correct static IP (`172.19.181.X`).
 
-For example on Debian 12 to do this you need to "apt install qemu-user-static".
-
-Then follow the standard steps
-
-## Cluster HAT Files
-
-The files/ directory contains the files extracted into the root filesystem of a Cluster HAT image.
-
-For support contact: https://secure.8086.net/billing/submitticket.php?step=2&deptid=1
-
+Feel free to re-run the script later with a different number—existing settings get updated in-place.
