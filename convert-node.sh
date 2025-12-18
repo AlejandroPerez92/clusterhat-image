@@ -58,6 +58,7 @@ Name=usb0
 
 [Network]
 Address=172.19.181.${ip_last_octet}/24
+Gateway=172.19.181.254
 DNS=8.8.8.8
 IPv6AcceptRA=no
 LinkLocalAddressing=no
@@ -106,6 +107,14 @@ main() {
   log "Configuring USB gadget network via systemd-networkd"
   if ! configure_networkd "$node_number"; then
     log "WARNING: usb0 static IP not configured automatically; please configure manually."
+  fi
+
+  log "Ensuring usb0 default route via controller"
+  ip route replace default via 172.19.181.254 dev usb0 || true
+
+  log "Pointing /etc/resolv.conf to systemd-resolved stub"
+  if [ -f /run/systemd/resolve/stub-resolv.conf ]; then
+    ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
   fi
 
   log "Installing composite gadget service"
