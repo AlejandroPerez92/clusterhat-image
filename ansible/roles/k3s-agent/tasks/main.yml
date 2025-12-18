@@ -1,0 +1,84 @@
+---
+- name: Determine controller host alias
+  ansible.builtin.set_fact:
+    controller_host: "{{ groups['controller'][0] }}"
+  when: groups['controller'] | length > 0
+
+- name: Resolve server URL from controller facts
+  ansible.builtin.set_fact:
+    resolved_k3s_server_url: >-
+      {{ k3s_server_url | default(hostvars[controller_host].k3s_server_url, true) }}
+  when: controller_host is defined
+
+- name: Resolve cluster token from controller facts
+  ansible.builtin.set_fact:
+    resolved_k3s_token: >-
+      {{ k3s_cluster_token if k3s_cluster_token else hostvars[controller_host].k3s_cluster_token }}
+  when: controller_host is defined
+
+- name: Fail when token or server URL missing
+  ansible.builtin.fail:
+    msg: "k3s_server_url or k3s_cluster_token is undefined. Run controller play or set group vars."
+  when: resolved_k3s_server_url is not defined or resolved_k3s_token is not defined
+
+- name: Ensure k3s installer script present
+  ansible.builtin.get_url:
+    url: https://get.k3s.io
+    dest: /usr/local/bin/install-k3s.sh
+    mode: '0755'
+
+- name: Install or upgrade k3s agent
+  ansible.builtin.command:
+    cmd: /usr/local/bin/install-k3s.sh
+  environment:
+    INSTALL_K3S_VERSION: "{{ k3s_version | default('') }}"
+    INSTALL_K3S_CHANNEL: "{{ k3s_channel | default('stable') }}"
+    INSTALL_K3S_EXEC: >-
+      agent --with-node-id
+      {{ k3s_agent_extra_args }}
+    K3S_URL: "{{ resolved_k3s_server_url }}"
+    K3S_TOKEN: "{{ resolved_k3s_token }}"
+  register: agent_install
+  changed_when: agent_install.rc == 0 and (((agent_install.stdout | default('')) | length) > 0)
+
+- name: Ensure k3s config directory exists
+  ansible.builtin.file:
+    path: "{{ k3s_agent_config_path | dirname }}"
+    state: directory
+    mode: '0755'
+
+- name: Render k3s agent config
+  ansible.builtin.copy:
+    dest: "{{ k3s_agent_config_path }}"
+    mode: '0644'
+    owner: root
+    group: root
+    content: |
+      server: {{ resolved_k3s_server_url }}
+      token: {{ resolved_k3s_token }}
+      {% if k3s_agent_node_labels %}
+      node-label:
+      {% for label in k3s_agent_node_labels %}
+        - {{ label }}
+      {% endfor %}
+      {% endif %}
+      {% if k3s_agent_node_taints %}
+      node-taint:
+      {% for taint in k3s_agent_node_taints %}
+        - {{ taint }}
+      {% endfor %}
+      {% endif %}
+  notify: Restart k3s-agent
+
+- name: Install custom k3s-agent systemd unit
+  ansible.builtin.template:
+    src: k3s-agent.service.j2
+    dest: /etc/systemd/system/k3s-agent.service
+    mode: '0644'
+  notify: Restart k3s-agent
+
+- name: Ensure k3s-agent service is enabled
+  ansible.builtin.service:
+    name: k3s-agent
+    state: started
+    enabled: true

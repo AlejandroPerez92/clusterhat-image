@@ -1,0 +1,3 @@
+node_timezone: "{{ timezone | default('UTC') }}"
+node_packages: []
+cluster_hosts_entries: []  # list of {ip: , name: }

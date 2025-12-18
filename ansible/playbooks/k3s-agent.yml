@@ -1,0 +1,7 @@
+---
+- name: Reinstall/upgrade k3s agents only
+  hosts: nodes
+  become: true
+  roles:
+    - role: k3s-agent
+      tags: [k3s]

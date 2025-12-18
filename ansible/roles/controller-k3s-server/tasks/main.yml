@@ -1,0 +1,68 @@
+---
+- name: Ensure required packages are present
+  ansible.builtin.package:
+    name:
+      - curl
+      - ca-certificates
+    state: present
+
+- name: Download k3s install script
+  ansible.builtin.get_url:
+    url: "{{ k3s_install_script_url }}"
+    dest: /usr/local/bin/install-k3s.sh
+    mode: '0755'
+
+- name: Install or upgrade k3s server
+  ansible.builtin.command:
+    cmd: /usr/local/bin/install-k3s.sh
+  environment:
+    INSTALL_K3S_VERSION: "{{ k3s_version | default('') }}"
+    INSTALL_K3S_CHANNEL: "{{ k3s_channel | default('stable') }}"
+    INSTALL_K3S_EXEC: >-
+      server --write-kubeconfig-mode 644
+      --tls-san {{ k3s_api_ip }}
+      {% for san in k3s_server_tls_sans %} --tls-san {{ san }}{% endfor %}
+      {{ k3s_controller_extra_args }}
+  register: k3s_install
+  changed_when: k3s_install.rc == 0 and ((k3s_install.stdout | default('')) | length > 0)
+
+- name: Wait for node-token to appear
+  ansible.builtin.wait_for:
+    path: "{{ k3s_data_dir }}/server/node-token"
+    state: present
+    timeout: 60
+
+- name: Configure k3s server config file
+  ansible.builtin.copy:
+    dest: "{{ k3s_server_config_path }}"
+    mode: '0644'
+    owner: root
+    group: root
+    content: |
+      node-name: {{ inventory_hostname }}
+      node-ip: {{ k3s_api_ip }}
+      tls-san:
+      {% for san in k3s_server_tls_sans %}
+        - {{ san }}
+      {% endfor %}
+  notify: Restart k3s server
+
+- name: Ensure k3s service is enabled and running
+  ansible.builtin.service:
+    name: k3s
+    state: started
+    enabled: true
+
+- name: Read cluster token
+  ansible.builtin.slurp:
+    src: "{{ k3s_data_dir }}/server/node-token"
+  register: controller_token
+  failed_when: controller_token is failed
+
+- name: Share controller token with inventory
+  ansible.builtin.set_fact:
+    k3s_cluster_token: "{{ controller_token.content | b64decode | trim }}"
+
+- name: Publish API endpoint fact
+  ansible.builtin.set_fact:
+    k3s_server_url: "https://{{ k3s_api_ip }}:6443"

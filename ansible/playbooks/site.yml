@@ -1,0 +1,20 @@
+---
+- name: Install k3s controller
+  hosts: controller
+  become: true
+  vars:
+    k3s_install_role: controller-k3s-server
+  roles:
+    - role: controller-k3s-server
+      tags: [controller, k3s]
+
+- name: Prepare and enroll Px nodes
+  hosts: nodes
+  become: true
+  roles:
+    - role: prereqs
+      tags: [pre]
+    - role: postinstall
+      tags: [post]
+    - role: k3s-agent
+      tags: [k3s]

@@ -1,0 +1,32 @@
+---
+- name: Install base packages
+  ansible.builtin.package:
+    name: "{{ node_packages }}"
+    state: present
+  when: node_packages | length > 0
+
+- name: Set timezone
+  ansible.builtin.command: timedatectl set-timezone {{ node_timezone }}
+  when: node_timezone is defined
+  changed_when: false
+
+- name: Ensure /etc/hosts contains controller entries
+  ansible.builtin.blockinfile:
+    path: /etc/hosts
+    block: |
+      {% for entry in cluster_hosts_entries %}
+      {{ entry.ip }} {{ entry.name }}
+      {% endfor %}
+    marker: "# {mark} ClusterCTRL"
+  when: cluster_hosts_entries | length > 0
+
+- name: Gather usb0 link facts
+  ansible.builtin.command: ip -br addr show usb0
+  register: usb0_status
+  changed_when: false
+  when: "'usb0' in ansible_facts.interfaces"
+
+- name: Show usb0 status
+  ansible.builtin.debug:
+    msg: "usb0 -> {{ usb0_status.stdout }}"
+  when: usb0_status is defined

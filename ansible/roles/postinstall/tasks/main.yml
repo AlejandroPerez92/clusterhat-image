@@ -1,0 +1,49 @@
+---
+- name: Ensure br_netfilter module is loaded
+  ansible.builtin.modprobe:
+    name: br_netfilter
+    state: present
+
+- name: Apply sysctl tweaks
+  ansible.builtin.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    state: present
+    reload: true
+  loop: "{{ postinstall_sysctls | dict2items }}"
+
+- name: Ensure /etc/modules-load.d/k3s.conf exists
+  ansible.builtin.copy:
+    dest: /etc/modules-load.d/k3s.conf
+    mode: '0644'
+    content: |
+      br_netfilter
+      overlay
+
+- name: Check for iptables-legacy binary
+  ansible.builtin.stat:
+    path: /usr/sbin/iptables-legacy
+  register: iptables_legacy_stat
+
+- name: Switch iptables to legacy backend
+  ansible.builtin.command: update-alternatives --set iptables /usr/sbin/iptables-legacy
+  register: iptables_alternatives
+  changed_when: "'already' not in (iptables_alternatives.stdout | default(''))"
+  failed_when: iptables_alternatives.rc != 0 and 'there is only one alternative' not in (iptables_alternatives.stderr | default(''))
+  when: iptables_legacy_stat.stat.exists
+
+- name: Check for ip6tables-legacy binary
+  ansible.builtin.stat:
+    path: /usr/sbin/ip6tables-legacy
+  register: ip6tables_legacy_stat
+
+- name: Switch ip6tables to legacy backend
+  ansible.builtin.command: update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy
+  register: ip6tables_alternatives
+  changed_when: "'already' not in (ip6tables_alternatives.stdout | default(''))"
+  failed_when: ip6tables_alternatives.rc != 0 and 'there is only one alternative' not in (ip6tables_alternatives.stderr | default(''))
+  when: ip6tables_legacy_stat.stat.exists
+
+- name: Report node ready state
+  ansible.builtin.debug:
+    msg: "{{ inventory_hostname }} prepared for k3s"
